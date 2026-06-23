@@ -1,1 +1,43 @@
 
+name: Release Watcher
+
+on:
+  workflow_dispatch:
+
+  schedule:
+    - cron: "0 */4 * * *"
+
+jobs:
+  check:
+
+    runs-on: ubuntu-latest
+
+    steps:
+
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: pip install -r requirements.txt
+
+      - name: Run Watcher
+        env:
+          TG_TOKEN: ${{ secrets.TG_TOKEN }}
+          CHAT_ID: ${{ secrets.CHAT_ID }}
+        run: |
+          python scripts/check_release.py
+
+      - name: Commit State
+        run: |
+          git config user.name github-actions
+          git config user.email github-actions@github.com
+
+          git add release_state.json
+
+          git diff --cached --quiet && exit 0
+
+          git commit -m "update release state"
+
+          git push
