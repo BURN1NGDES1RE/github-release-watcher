@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import html
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
 
@@ -39,8 +40,6 @@ def format_time(utc_time):
         return utc_time
 
 
-import re
-
 def extract_release_notes(body, max_items=5):
     if not body:
         return "No release notes provided."
@@ -49,7 +48,6 @@ def extract_release_notes(body, max_items=5):
     change_count = 0
 
     for line in body.splitlines():
-
         line = line.strip()
 
         if not line:
@@ -64,21 +62,26 @@ def extract_release_notes(body, max_items=5):
         if line.lower().startswith("full changelog"):
             continue
 
-        # 保留 Markdown 标题
         if line.startswith("### "):
             output.append(line)
             continue
 
-        # 只保留列表项
         if line.startswith(("- ", "* ")):
-            # 去掉前缀
             item = line[2:].strip()
 
-            # 去掉 PR 编号
-            item = re.sub(r"\s*\(#\d+\)", "", item)
+            # 删除 PR 编号
+            item = re.sub(
+                r"\s*\(#\d+\)",
+                "",
+                item
+            )
 
-            # 去掉 commit hash
-            item = re.sub(r"\s*\([a-f0-9]{7,40}\)$", "", item)
+            # 删除 commit hash
+            item = re.sub(
+                r"\s*\([a-f0-9]{7,40}\)$",
+                "",
+                item
+            )
 
             output.append(f"- {item}")
 
@@ -86,7 +89,9 @@ def extract_release_notes(body, max_items=5):
 
             if change_count >= max_items:
                 output.append("")
-                output.append("... (more changes in release page)")
+                output.append(
+                    "... (more changes in release page)"
+                )
                 break
 
     if not output:
@@ -94,16 +99,25 @@ def extract_release_notes(body, max_items=5):
 
     return "\n".join(output)
 
+
 def load_state():
     if Path(STATE_FILE).exists():
-        with open(STATE_FILE, "r") as f:
+        with open(
+            STATE_FILE,
+            "r",
+            encoding="utf-8"
+        ) as f:
             return json.load(f)
 
     return {}
 
 
 def save_state(state):
-    with open(STATE_FILE, "w") as f:
+    with open(
+        STATE_FILE,
+        "w",
+        encoding="utf-8"
+    ) as f:
         json.dump(
             state,
             f,
@@ -117,7 +131,11 @@ def get_latest_release(repo):
 
     r = requests.get(
         url,
-        timeout=30
+        headers={
+            "Accept": "application/vnd.github+json",
+            "User-Agent": "github-release-watcher",
+        },
+        timeout=30,
     )
 
     if r.status_code != 200:
@@ -135,7 +153,11 @@ state = load_state()
 
 first_run = len(state) == 0
 
-with open(WATCHLIST, "r") as f:
+with open(
+    WATCHLIST,
+    "r",
+    encoding="utf-8"
+) as f:
     repos = [
         line.strip()
         for line in f
@@ -172,12 +194,18 @@ for repo in repos:
             ""
         )
 
-        notes = extract_release_notes(
-            release.get(
-                "body",
-                ""
+        notes = html.escape(
+            extract_release_notes(
+                release.get(
+                    "body",
+                    ""
+                )
             )
         )
+
+        repo_display = html.escape(repo)
+        tag_display = html.escape(tag)
+        url_display = html.escape(url)
 
         published_local = format_time(
             release.get(
@@ -188,15 +216,15 @@ for repo in repos:
 
         msg = (
             f"<b>New Release</b>\n\n"
-            f"<code>{repo}</code>\n\n"
+            f"<code>{repo_display}</code>\n\n"
             f"<b>Version</b>\n"
-            f"{tag}\n\n"
+            f"{tag_display}\n\n"
             f"<b>Published</b>\n"
             f"{published_local}\n\n"
             f"<b>Release Notes</b>\n\n"
             f"{notes}\n\n"
             f"<b>Release URL</b>\n"
-            f"{url}"
+            f"{url_display}"
         )
 
         telegram_send(msg)
