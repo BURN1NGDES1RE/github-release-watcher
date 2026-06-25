@@ -1,5 +1,6 @@
 import json
 import os
+import re
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
 
@@ -33,18 +34,22 @@ def format_time(utc_time):
         dt = dt.astimezone(
             timezone(timedelta(hours=8))
         )
-        return dt.strftime("%Y-%m-%d %H:%M (UTC+8)")
+        return dt.strftime("%Y-%m-%d %H:%M")
     except Exception:
         return utc_time
 
 
-def extract_release_notes(body, max_lines=8):
+import re
+
+def extract_release_notes(body, max_items=5):
     if not body:
         return "No release notes provided."
 
-    lines = []
+    output = []
+    change_count = 0
 
     for line in body.splitlines():
+
         line = line.strip()
 
         if not line:
@@ -59,19 +64,35 @@ def extract_release_notes(body, max_lines=8):
         if line.lower().startswith("full changelog"):
             continue
 
-        if len(line) > 300:
+        # 保留 Markdown 标题
+        if line.startswith("### "):
+            output.append(line)
             continue
 
-        lines.append(line)
+        # 只保留列表项
+        if line.startswith(("- ", "* ")):
+            # 去掉前缀
+            item = line[2:].strip()
 
-        if len(lines) >= max_lines:
-            break
+            # 去掉 PR 编号
+            item = re.sub(r"\s*\(#\d+\)", "", item)
 
-    if not lines:
+            # 去掉 commit hash
+            item = re.sub(r"\s*\([a-f0-9]{7,40}\)$", "", item)
+
+            output.append(f"- {item}")
+
+            change_count += 1
+
+            if change_count >= max_items:
+                output.append("")
+                output.append("... (more changes in release page)")
+                break
+
+    if not output:
         return "No release notes provided."
 
-    return "\n".join(lines)
-
+    return "\n".join(output)
 
 def load_state():
     if Path(STATE_FILE).exists():
