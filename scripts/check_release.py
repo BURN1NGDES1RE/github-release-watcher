@@ -1,232 +1,195 @@
 import json
 import os
-import re
-import html
+import time
 from pathlib import Path
-from datetime import datetime, timezone, timedelta
 
 import requests
 
 WATCHLIST = "watchlist.txt"
 STATE_FILE = "release_state.json"
 
+SKIP_SECTIONS = {
+    "contributors",
+    "distribution notes",
+    "chore",
+    "ci",
+    "build",
+    "misc",
+    "other"
+}
+
 TG_TOKEN = os.environ["TG_TOKEN"]
 CHAT_ID = os.environ["CHAT_ID"]
 
+# =========================
+# Telegram Sender
+# =========================
+def telegram_send(text, retries=3):
+    url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
 
-def telegram_send(text):
-    requests.post(
-        f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage",
-        json={
-            "chat_id": CHAT_ID,
-            "text": text,
-            "parse_mode": "HTML",
-            "disable_web_page_preview": True,
-        },
-        timeout=30,
-    )
+    payload = {
+        "chat_id": CHAT_ID,
+        "text": text,
+        "disable_web_page_preview": True,
+    }
 
+    for _ in range(retries):
+        try:
+            r = requests.post(url, json=payload, timeout=30)
+            if r.status_code == 200:
+                return True
+        except Exception:
+            pass
+        time.sleep(2)
 
-def format_time(utc_time):
-    try:
-        dt = datetime.fromisoformat(
-            utc_time.replace("Z", "+00:00")
-        )
-        dt = dt.astimezone(
-            timezone(timedelta(hours=8))
-        )
-        return dt.strftime("%Y-%m-%d %H:%M")
-    except Exception:
-        return utc_time
+    return False
 
 
+# =========================
+# Release Notes Cleaner
+# =========================
 def extract_release_notes(body, max_items=5):
+
     if not body:
-        return "No release notes provided."
+        return "- No structured release notes"
 
     output = []
     change_count = 0
+    skip_mode = False
 
     for line in body.splitlines():
-        line = line.strip()
 
+        line = line.strip()
         if not line:
             continue
 
-        if line.startswith("!["):
-            continue
-
-        if line.startswith("<img"):
-            continue
-
-        if line.lower().startswith("full changelog"):
-            continue
-
         if line.startswith("### "):
+            section = line.replace("###", "").strip().lower()
+            skip_mode = section in SKIP_SECTIONS
+            if skip_mode:
+                continue
             output.append(line)
             continue
 
+        if skip_mode:
+            continue
+
+        if line.startswith(("![", "<img")):
+            continue
+
+        if line.lower().startswith("chore:"):
+            continue
+
+        if line.lower().startswith("ci:"):
+            continue
+
         if line.startswith(("- ", "* ")):
-            item = line[2:].strip()
-
-            # 删除 PR 编号
-            item = re.sub(
-                r"\s*\(#\d+\)",
-                "",
-                item
-            )
-
-            # 删除 commit hash
-            item = re.sub(
-                r"\s*\([a-f0-9]{7,40}\)$",
-                "",
-                item
-            )
-
-            output.append(f"- {item}")
-
+            output.append(line)
             change_count += 1
 
             if change_count >= max_items:
                 output.append("")
-                output.append(
-                    "... (more changes in release page)"
-                )
+                output.append("... (more changes in release page)")
                 break
 
     if not output:
-        return "No release notes provided."
+        return "- No structured release notes"
 
     return "\n".join(output)
 
 
+# =========================
+# State
+# =========================
 def load_state():
     if Path(STATE_FILE).exists():
-        with open(
-            STATE_FILE,
-            "r",
-            encoding="utf-8"
-        ) as f:
+        with open(STATE_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
-
     return {}
 
 
 def save_state(state):
-    with open(
-        STATE_FILE,
-        "w",
-        encoding="utf-8"
-    ) as f:
-        json.dump(
-            state,
-            f,
-            indent=2,
-            sort_keys=True
-        )
+    with open(STATE_FILE, "w", encoding="utf-8") as f:
+        json.dump(state, f, indent=2, sort_keys=True)
 
 
+# =========================
+# GitHub API
+# =========================
 def get_latest_release(repo):
     url = f"https://api.github.com/repos/{repo}/releases"
 
-    r = requests.get(
-        url,
-        headers={
-            "Accept": "application/vnd.github+json",
-            "User-Agent": "github-release-watcher",
-        },
-        timeout=30,
-    )
+    try:
+        r = requests.get(
+            url,
+            headers={
+                "Accept": "application/vnd.github+json",
+                "User-Agent": "release-watcher-v2"
+            },
+            timeout=30,
+        )
 
-    if r.status_code != 200:
+        if r.status_code != 200:
+            return None
+
+        data = r.json()
+        if not data:
+            return None
+
+        return data[0]
+
+    except Exception:
         return None
 
-    releases = r.json()
 
-    if not releases:
-        return None
+# =========================
+# Main
+# =========================
+def main():
 
-    return releases[0]
+    state = load_state()
 
+    with open(WATCHLIST, "r", encoding="utf-8") as f:
+        repos = [x.strip() for x in f if x.strip()]
 
-state = load_state()
+    for repo in repos:
 
-first_run = len(state) == 0
+        release = get_latest_release(repo)
+        if not release:
+            continue
 
-with open(
-    WATCHLIST,
-    "r",
-    encoding="utf-8"
-) as f:
-    repos = [
-        line.strip()
-        for line in f
-        if line.strip()
-    ]
+        tag = release.get("tag_name", "")
+        published = release.get("published_at", "")
+        url = release.get("html_url", "")
+        name = release.get("name") or "Untitled"
 
-for repo in repos:
+        release_key = f"{tag}@{published}"
+        old_key = state.get(repo)
 
-    release = get_latest_release(repo)
+        is_new_repo = old_key is None
 
-    if not release:
-        continue
+        if old_key == release_key:
+            continue
 
-    release_id = str(release["id"])
-
-    if repo not in state:
-        state[repo] = release_id
-        continue
-
-    if state[repo] == release_id:
-        continue
-
-    state[repo] = release_id
-
-    if not first_run:
-
-        tag = release.get(
-            "tag_name",
-            ""
-        )
-
-        url = release.get(
-            "html_url",
-            ""
-        )
-
-        notes = html.escape(
-            extract_release_notes(
-                release.get(
-                    "body",
-                    ""
-                )
-            )
-        )
-
-        repo_display = html.escape(repo)
-        tag_display = html.escape(tag)
-        url_display = html.escape(url)
-
-        published_local = format_time(
-            release.get(
-                "published_at",
-                ""
-            )
-        )
+        if is_new_repo:
+            state[repo] = release_key
+            continue
 
         msg = (
-            f"<b>New Release</b>\n\n"
-            f"<code>{repo_display}</code>\n\n"
-            f"<b>Version</b>\n"
-            f"{tag_display}\n\n"
-            f"<b>Published</b>\n"
-            f"{published_local}\n\n"
-            f"<b>Release Notes</b>\n\n"
-            f"{notes}\n\n"
-            f"<b>Release URL</b>\n"
-            f"{url_display}"
+            "New Release\n\n"
+            f"Repo: {repo}\n"
+            f"Title: {name}\n"
+            f"Version: {tag}\n"
+            f"Published: {published}\n\n"
+            f"{url}"
         )
 
         telegram_send(msg)
 
-save_state(state)
+        state[repo] = release_key
+
+    save_state(state)
+
+
+if __name__ == "__main__":
+    main()
