@@ -2,18 +2,27 @@ import json
 import os
 import time
 from pathlib import Path
-from datetime import datetime
 
 import requests
 
 WATCHLIST = "watchlist.txt"
 STATE_FILE = "release_state.json"
 
+SKIP_SECTIONS = {
+    "contributors",
+    "distribution notes",
+    "chore",
+    "ci",
+    "build",
+    "misc",
+    "other"
+}
+
 TG_TOKEN = os.environ["TG_TOKEN"]
 CHAT_ID = os.environ["CHAT_ID"]
 
 # =========================
-# Telegram Sender (safe + retry)
+# Telegram Sender
 # =========================
 def telegram_send(text, retries=3):
     url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
@@ -24,17 +33,69 @@ def telegram_send(text, retries=3):
         "disable_web_page_preview": True,
     }
 
-    for i in range(retries):
+    for _ in range(retries):
         try:
             r = requests.post(url, json=payload, timeout=30)
             if r.status_code == 200:
                 return True
         except Exception:
             pass
-
         time.sleep(2)
 
     return False
+
+
+# =========================
+# Release Notes Cleaner
+# =========================
+def extract_release_notes(body, max_items=5):
+
+    if not body:
+        return "- No structured release notes"
+
+    output = []
+    change_count = 0
+    skip_mode = False
+
+    for line in body.splitlines():
+
+        line = line.strip()
+        if not line:
+            continue
+
+        if line.startswith("### "):
+            section = line.replace("###", "").strip().lower()
+            skip_mode = section in SKIP_SECTIONS
+            if skip_mode:
+                continue
+            output.append(line)
+            continue
+
+        if skip_mode:
+            continue
+
+        if line.startswith(("![", "<img")):
+            continue
+
+        if line.lower().startswith("chore:"):
+            continue
+
+        if line.lower().startswith("ci:"):
+            continue
+
+        if line.startswith(("- ", "* ")):
+            output.append(line)
+            change_count += 1
+
+            if change_count >= max_items:
+                output.append("")
+                output.append("... (more changes in release page)")
+                break
+
+    if not output:
+        return "- No structured release notes"
+
+    return "\n".join(output)
 
 
 # =========================
@@ -102,34 +163,29 @@ def main():
         url = release.get("html_url", "")
         name = release.get("name") or "Untitled"
 
-        # ⭐ 稳定唯一 key（核心）
         release_key = f"{tag}@{published}"
-
         old_key = state.get(repo)
 
-        # 已处理过
+        is_new_repo = old_key is None
+
         if old_key == release_key:
             continue
 
-        # =========================
-        # 只有真正新 release 才通知
-        # =========================
-        if old_key is not None:
+        if is_new_repo:
+            state[repo] = release_key
+            continue
 
-            msg = (
-                "New Release\n\n"
-                f"Repo: {repo}\n"
-                f"Title: {name}\n"
-                f"Version: {tag}\n"
-                f"Published: {published}\n\n"
-                f"{url}"
-            )
+        msg = (
+            "New Release\n\n"
+            f"Repo: {repo}\n"
+            f"Title: {name}\n"
+            f"Version: {tag}\n"
+            f"Published: {published}\n\n"
+            f"{url}"
+        )
 
-            telegram_send(msg)
+        telegram_send(msg)
 
-        # =========================
-        # 最后再写 state（关键）
-        # =========================
         state[repo] = release_key
 
     save_state(state)
