@@ -4,7 +4,6 @@ import time
 import re
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
-
 import requests
 
 WATCHLIST = "watchlist.txt"
@@ -15,7 +14,7 @@ CHAT_ID = os.environ["CHAT_ID"]
 
 
 # =========================
-# Telegram
+# Telegram Sender
 # =========================
 def telegram_send(text, retries=3):
     url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
@@ -39,7 +38,7 @@ def telegram_send(text, retries=3):
 
 
 # =========================
-# Time formatter (UTC → UTC+8)
+# Time format (UTC → UTC+8)
 # =========================
 def format_time(utc_time):
     try:
@@ -54,7 +53,7 @@ def format_time(utc_time):
 
 
 # =========================
-# Release Notes Cleaner
+# Release Notes Parser
 # =========================
 def extract_release_notes(body, max_items=6):
 
@@ -75,9 +74,17 @@ def extract_release_notes(body, max_items=6):
         if line.startswith("###"):
             continue
 
-        if not line.startswith(("-", "*", "+")):
+        # 支持 - / * / + / 1. 2. 3.
+        is_item = (
+            line.startswith(("-", "*", "+")) or
+            re.match(r"^\d+\.\s+", line)
+        )
+
+        if not is_item:
             continue
 
+        # 清洗内容
+        line = re.sub(r"^\d+\.\s*", "", line)
         line = re.sub(r"\s*By\s+@\w+", "", line)
         line = re.sub(r"\(#\d+\)", "", line)
         line = re.sub(r"\b[0-9a-f]{7,40}\b", "", line)
@@ -102,9 +109,10 @@ def get_latest_release(repo):
 
     headers = {
         "Accept": "application/vnd.github+json",
-        "User-Agent": "release-watcher-v6.1"
+        "User-Agent": "release-watcher-v6.3"
     }
 
+    # latest
     try:
         r = requests.get(
             f"https://api.github.com/repos/{repo}/releases/latest",
@@ -116,6 +124,7 @@ def get_latest_release(repo):
     except:
         pass
 
+    # releases fallback
     try:
         r = requests.get(
             f"https://api.github.com/repos/{repo}/releases",
@@ -151,10 +160,21 @@ def save_state(state):
 
 
 # =========================
+# Version normalize (你要求的核心修复)
+# =========================
+def get_version(release):
+    return (
+        release.get("name")
+        or release.get("tag_name")
+        or "unknown"
+    )
+
+
+# =========================
 # Key
 # =========================
 def build_key(repo, release):
-    return f"{release.get('tag_name','')}|{release.get('published_at','')}|{release.get('html_url','')}"
+    return f"{repo}|{release.get('tag_name','')}|{release.get('published_at','')}"
 
 
 # =========================
@@ -181,32 +201,29 @@ def main():
 
         is_first = old is None
 
-        # 先更新 state
         state[repo] = key
 
         if is_first:
             continue
 
-        tag = release.get("tag_name", "")
+        version = get_version(release)
         published = format_time(release.get("published_at", ""))
         url = release.get("html_url", "")
         body = release.get("body", "")
 
         notes = extract_release_notes(body)
 
-        # =========================
-        # UI优化（你要的格式）
-        # =========================
         msg = (
-            f"{repo} New Release\n\n"
-            f"Version\n{tag}\n\n"
-            f"Published\n{published}\n\n"
-            f"Release Notes\n{notes}\n\n"
-            f"Release URL\n{url}"
-        ).strip()
+            f"{repo} New Release\n"
+            f"Version: {version}\n"
+            f"Published: {published}\n\n"
+            f"Release Notes\n"
+            f"{notes}\n\n"
+            f"Release URL\n"
+            f"{url}"
+        )
 
-        # 去掉多余空行
-        msg = re.sub(r"\n{3,}", "\n\n", msg)
+        msg = re.sub(r"\n{3,}", "\n\n", msg).strip()
 
         telegram_send(msg)
 
