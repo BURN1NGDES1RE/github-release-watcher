@@ -122,7 +122,7 @@ def main():
         published = release.get("published_at", "")
 
         # ⭐ v4 核心 key
-        release_key = release_id
+        release_key = f"{repo}@{tag}"
 
         old_key = state.get(repo)
 
