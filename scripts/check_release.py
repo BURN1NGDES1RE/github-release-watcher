@@ -13,9 +13,6 @@ TG_TOKEN = os.environ["TG_TOKEN"]
 CHAT_ID = os.environ["CHAT_ID"]
 
 
-# =========================
-# Telegram sender
-# =========================
 def telegram_send(text, retries=3):
     url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
 
@@ -37,108 +34,60 @@ def telegram_send(text, retries=3):
     return False
 
 
-# =========================
-# Time format
-# =========================
-def format_time(utc_time):
+def format_time(t):
     try:
-        dt = datetime.fromisoformat(utc_time.replace("Z", "+00:00"))
+        dt = datetime.fromisoformat(t.replace("Z", "+00:00"))
         return dt.strftime("%Y-%m-%d %H:%M")
     except:
-        return utc_time
+        return t
 
 
-# =========================
-# Clean line (v6.9.2 핵心)
-# =========================
-def clean_line(line: str) -> str:
-
-    # remove HTML tags
+def clean(line: str) -> str:
     line = re.sub(r"<[^>]+>", "", line)
-
-    # remove @username
     line = re.sub(r"@\w+", "", line)
-
-    # remove empty parentheses (normal + Chinese)
     line = re.sub(r"\(\s*\)", "", line)
     line = re.sub(r"（\s*）", "", line)
-
-    # remove leading list markers
     line = re.sub(r"^(\d+\.|-|\*)\s*", "", line)
-
-    # collapse spaces
     line = re.sub(r"\s{2,}", " ", line).strip()
-
     return line
 
 
-# =========================
-# Release notes parser
-# =========================
-def extract_release_notes(body, max_items=8):
-
+def extract(body):
     if not body:
         return "No release notes"
 
-    output = []
-    count = 0
-
-    for raw in body.splitlines():
-
-        line = clean_line(raw)
-
-        if not line:
+    out = []
+    for l in body.splitlines():
+        l = clean(l)
+        if len(l) < 2:
             continue
-
-        low = line.lower()
-
-        # skip noise sections
-        if any(x in low for x in [
-            "contributors",
-            "sponsors",
-            "github actions",
-        ]):
-            continue
-
-        if len(line) < 2:
-            continue
-
-        output.append(f"- {line}")
-        count += 1
-
-        if count >= max_items:
-            output.append("... more changes in release page")
+        out.append(f"- {l}")
+        if len(out) >= 8:
             break
 
-    return "\n".join(output) if output else "No release notes"
+    return "\n".join(out) if out else "No release notes"
 
 
-# =========================
-# State
-# =========================
 def load_state():
     if Path(STATE_FILE).exists():
         return json.load(open(STATE_FILE, "r", encoding="utf-8"))
     return {}
 
 
-def save_state(state):
+def save_state(s):
     Path(STATE_FILE).parent.mkdir(parents=True, exist_ok=True)
-    json.dump(state, open(STATE_FILE, "w", encoding="utf-8"), indent=2, sort_keys=True)
+    json.dump(s, open(STATE_FILE, "w", encoding="utf-8"), indent=2)
 
 
-# =========================
-# GitHub API
-# =========================
 def get_release(repo):
-    url = f"https://api.github.com/repos/{repo}/releases/latest"
+    url = f"https://api.github.com/repos/{repo}/releases?per_page=1"
     r = requests.get(url, timeout=30)
-    return r.json() if r.status_code == 200 else None
+    if r.status_code != 200:
+        return None
+    data = r.json()
+    return data[0] if data else None
 
 
-# =========================
-# Main
-# =========================
 def main():
 
     state = load_state()
@@ -147,25 +96,30 @@ def main():
 
     for repo in repos:
 
-        release = get_release(repo)
-        if not release:
+        r = get_release(repo)
+        if not r:
             continue
 
-        tag = release.get("tag_name", "")
-        body = release.get("body", "")
-        url = release.get("html_url", "")
-        published = format_time(release.get("published_at", ""))
+        tag = r.get("tag_name", "")
+        published_raw = r.get("published_at", "")
+        published = format_time(published_raw)
+        url = r.get("html_url", "")
+        body = r.get("body", "")
 
-        release_key = f"{tag}@{release.get('id')}"
+        # ⭐ FIX: stable key
+        release_key = f"{tag}@{published_raw}"
 
         old = state.get(repo)
+
+        # debug（关键）
+        print(f"[DEBUG] {repo} old={old} new={release_key}")
 
         if old == release_key:
             continue
 
         state[repo] = release_key
 
-        notes = extract_release_notes(body)
+        notes = extract(body)
 
         msg = (
             f"{repo}\n\n"
