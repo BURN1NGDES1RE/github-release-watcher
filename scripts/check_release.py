@@ -4,7 +4,6 @@ import time
 import re
 from pathlib import Path
 from datetime import datetime
-
 import requests
 
 WATCHLIST = "watchlist.txt"
@@ -14,9 +13,6 @@ TG_TOKEN = os.environ["TG_TOKEN"]
 CHAT_ID = os.environ["CHAT_ID"]
 
 
-# =========================
-# Telegram
-# =========================
 def telegram_send(text, retries=3):
     url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
 
@@ -38,144 +34,102 @@ def telegram_send(text, retries=3):
     return False
 
 
-# =========================
-# Time format (UTC -> CN)
-# =========================
 def format_time(utc_time):
     try:
         dt = datetime.fromisoformat(utc_time.replace("Z", "+00:00"))
         return dt.strftime("%Y-%m-%d %H:%M")
-    except Exception:
+    except:
         return utc_time
 
 
 # =========================
-# Release Notes Parser v6.6
+# Smart parser v6.7
 # =========================
-def extract_release_notes(body, max_items=6):
-    if not body or not body.strip():
+def extract_release_notes(body, max_items=8):
+    if not body:
         return "No release notes"
 
-    output = []
-    count = 0
+    sections = {
+        "feat": [],
+        "fix": [],
+        "opt": [],
+        "other": []
+    }
 
-    for raw_line in body.splitlines():
-        line = raw_line.strip()
+    for line in body.splitlines():
+        line = line.strip()
         if not line:
             continue
 
-        lower = line.lower()
+        line = re.sub(r"@\w+", "", line)  # remove @author
 
-        # skip noise
-        if any(x in lower for x in [
-            "contributors",
-            "chore:",
-            "ci:",
-            "merged pull request",
-        ]):
+        low = line.lower()
+
+        if any(k in low for k in ["chore:", "ci:", "merged pull request"]):
             continue
 
-        # skip images
-        if line.startswith("![") or "<img" in line:
-            continue
+        item = re.sub(r"^(\d+\.|-|\*)\s*", "", line)
 
-        # detect list
-        is_list = (
-            line.startswith("- ")
-            or line.startswith("* ")
-            or re.match(r"^\d+\.\s", line)
-        )
-
-        if is_list:
-            clean = re.sub(r"^(\d+\.|-|\*)\s*", "", line)
-            output.append(f"- {clean}")
-            count += 1
+        if any(k in low for k in ["新增", "feat", "add"]):
+            sections["feat"].append(item)
+        elif any(k in low for k in ["修复", "fix"]):
+            sections["fix"].append(item)
+        elif any(k in low for k in ["优化", "optimize", "improve"]):
+            sections["opt"].append(item)
         else:
-            # keep normal text (关键修复点)
-            if len(line) > 4:
-                output.append(f"- {line}")
-                count += 1
+            sections["other"].append(item)
 
-        if count >= max_items:
-            output.append("... more changes in release page")
-            break
+    output = []
+
+    for title, items in sections.items():
+        for i in items:
+            output.append(f"- {i}")
+            if len(output) >= max_items:
+                output.append("... more changes in release page")
+                return "\n".join(output)
 
     return "\n".join(output) if output else "No release notes"
 
 
-# =========================
-# State
-# =========================
 def load_state():
     if Path(STATE_FILE).exists():
-        with open(STATE_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
+        return json.load(open(STATE_FILE, "r", encoding="utf-8"))
     return {}
 
 
 def save_state(state):
     Path(STATE_FILE).parent.mkdir(parents=True, exist_ok=True)
-    with open(STATE_FILE, "w", encoding="utf-8") as f:
-        json.dump(state, f, indent=2, sort_keys=True)
+    json.dump(state, open(STATE_FILE, "w", encoding="utf-8"), indent=2)
 
 
-# =========================
-# GitHub API
-# =========================
-def get_latest_release(repo):
+def get_release(repo):
     url = f"https://api.github.com/repos/{repo}/releases/latest"
-
-    try:
-        r = requests.get(
-            url,
-            headers={
-                "Accept": "application/vnd.github+json",
-                "User-Agent": "release-watcher-v6.6"
-            },
-            timeout=30,
-        )
-
-        if r.status_code != 200:
-            return None
-
-        return r.json()
-
-    except Exception:
-        return None
+    r = requests.get(url, timeout=30)
+    return r.json() if r.status_code == 200 else None
 
 
-# =========================
-# Main
-# =========================
 def main():
     state = load_state()
 
-    with open(WATCHLIST, "r", encoding="utf-8") as f:
-        repos = [x.strip() for x in f if x.strip()]
+    repos = [x.strip() for x in open(WATCHLIST) if x.strip()]
 
     for repo in repos:
-        release = get_latest_release(repo)
-        if not release:
+        r = get_release(repo)
+        if not r:
             continue
 
-        tag = release.get("tag_name", "")
-        name = release.get("name") or tag
-        published = format_time(release.get("published_at", ""))
-        url = release.get("html_url", "")
-        body = release.get("body", "")
+        tag = r.get("tag_name", "")
+        rid = str(r.get("id"))
+        body = r.get("body", "")
+        published = format_time(r.get("published_at", ""))
+        url = r.get("html_url", "")
 
-        release_key = f"{tag}@{release.get('id')}"
+        key = f"{tag}@{rid}"
 
-        old_key = state.get(repo)
-
-        if old_key == release_key:
+        if state.get(repo) == key:
             continue
 
-        is_first = old_key is None
-        state[repo] = release_key
-
-        if is_first:
-            continue
+        state[repo] = key
 
         notes = extract_release_notes(body)
 
