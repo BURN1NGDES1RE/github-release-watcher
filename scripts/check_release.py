@@ -3,6 +3,8 @@ import os
 import time
 import re
 from pathlib import Path
+from datetime import datetime, timezone, timedelta
+
 import requests
 
 WATCHLIST = "watchlist.txt"
@@ -13,7 +15,7 @@ CHAT_ID = os.environ["CHAT_ID"]
 
 
 # =========================
-# Telegram Sender
+# Telegram
 # =========================
 def telegram_send(text, retries=3):
     url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
@@ -37,12 +39,27 @@ def telegram_send(text, retries=3):
 
 
 # =========================
-# Release Notes Cleaner (v6)
+# Time formatter (UTC → UTC+8)
+# =========================
+def format_time(utc_time):
+    try:
+        if not utc_time:
+            return ""
+
+        dt = datetime.fromisoformat(utc_time.replace("Z", "+00:00"))
+        dt = dt.astimezone(timezone(timedelta(hours=8)))
+        return dt.strftime("%Y-%m-%d %H:%M")
+    except:
+        return utc_time
+
+
+# =========================
+# Release Notes Cleaner
 # =========================
 def extract_release_notes(body, max_items=6):
 
     if not body:
-        return "No release notes available"
+        return "No structured changes detected"
 
     lines = []
     count = 0
@@ -61,7 +78,6 @@ def extract_release_notes(body, max_items=6):
         if not line.startswith(("-", "*", "+")):
             continue
 
-        # clean noise
         line = re.sub(r"\s*By\s+@\w+", "", line)
         line = re.sub(r"\(#\d+\)", "", line)
         line = re.sub(r"\b[0-9a-f]{7,40}\b", "", line)
@@ -76,20 +92,19 @@ def extract_release_notes(body, max_items=6):
         if count >= max_items:
             break
 
-    return "\n".join(lines) if lines else "No significant changes listed"
+    return "\n".join(lines) if lines else "No structured changes detected"
 
 
 # =========================
-# GitHub API (v6 stable resolver)
+# GitHub API
 # =========================
 def get_latest_release(repo):
 
     headers = {
         "Accept": "application/vnd.github+json",
-        "User-Agent": "release-watcher-v6"
+        "User-Agent": "release-watcher-v6.1"
     }
 
-    # 1. latest endpoint
     try:
         r = requests.get(
             f"https://api.github.com/repos/{repo}/releases/latest",
@@ -101,7 +116,6 @@ def get_latest_release(repo):
     except:
         pass
 
-    # 2. full releases
     try:
         r = requests.get(
             f"https://api.github.com/repos/{repo}/releases",
@@ -114,27 +128,6 @@ def get_latest_release(repo):
             data.sort(key=lambda x: x.get("published_at") or "", reverse=True)
             if data:
                 return data[0]
-    except:
-        pass
-
-    # 3. tags fallback
-    try:
-        r = requests.get(
-            f"https://api.github.com/repos/{repo}/tags",
-            headers=headers,
-            timeout=30,
-        )
-        if r.status_code == 200:
-            tags = r.json()
-            if tags:
-                t = tags[0]["name"]
-                return {
-                    "tag_name": t,
-                    "name": t,
-                    "html_url": f"https://github.com/{repo}/releases",
-                    "published_at": "",
-                    "body": "",
-                }
     except:
         pass
 
@@ -158,13 +151,10 @@ def save_state(state):
 
 
 # =========================
-# Key generator (核心升级)
+# Key
 # =========================
-def build_release_key(repo, release):
-    tag = release.get("tag_name", "")
-    published = release.get("published_at", "")
-    url = release.get("html_url", "")
-    return f"{repo}|{tag}|{published}|{url}"
+def build_key(repo, release):
+    return f"{release.get('tag_name','')}|{release.get('published_at','')}|{release.get('html_url','')}"
 
 
 # =========================
@@ -183,39 +173,40 @@ def main():
         if not release:
             continue
 
-        new_key = build_release_key(repo, release)
-        old_key = state.get(repo)
+        key = build_key(repo, release)
+        old = state.get(repo)
 
-        # ❗关键：先判断再写 state
-        is_first = old_key is None
-        is_same = old_key == new_key
-
-        if is_same:
+        if old == key:
             continue
 
-        tag = release.get("tag_name", "")
-        name = release.get("name") or tag
-        published = release.get("published_at", "")
-        url = release.get("html_url", "")
-        body = release.get("body", "")
+        is_first = old is None
 
-        # 更新 state（但不会影响当前判断）
-        state[repo] = new_key
+        # 先更新 state
+        state[repo] = key
 
-        # 首次只记录不通知
         if is_first:
             continue
 
+        tag = release.get("tag_name", "")
+        published = format_time(release.get("published_at", ""))
+        url = release.get("html_url", "")
+        body = release.get("body", "")
+
         notes = extract_release_notes(body)
 
+        # =========================
+        # UI优化（你要的格式）
+        # =========================
         msg = (
-            "New Release\n\n"
-            f"Repo: {repo}\n\n"
+            f"{repo} New Release\n\n"
             f"Version\n{tag}\n\n"
             f"Published\n{published}\n\n"
-            f"Release Notes\n\n{notes}\n\n"
+            f"Release Notes\n{notes}\n\n"
             f"Release URL\n{url}"
-        )
+        ).strip()
+
+        # 去掉多余空行
+        msg = re.sub(r"\n{3,}", "\n\n", msg)
 
         telegram_send(msg)
 
