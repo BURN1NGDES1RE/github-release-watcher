@@ -162,41 +162,41 @@ def main():
 
     for repo in repos:
 
-        release = get_latest_release(repo)
-        if not release:
-            continue
+    release = get_latest_release(repo)
+    if not release:
+        continue
 
-        tag = release.get("tag_name", "")
-        published = format_time(
-            release.get("published_at", "")
-        )
-        url = release.get("html_url", "")
-        notes = extract_release_notes(
-            release.get("body", "")
-        )
+    tag = release.get("tag_name", "")
+    published = release.get("published_at", "")
+    url = release.get("html_url", "")
+    name = release.get("name") or "Untitled"
 
-        release_key = f"{tag}@{published}"
-        old_key = state.get(repo)
+    release_key = f"{tag}@{published}"
 
-        is_new_repo = old_key is None
+    old_key = state.get(repo)
 
-        if old_key == release_key:
-            continue
+    if old_key == release_key:
+        continue
 
-        if is_new_repo:
-            state[repo] = release_key
-            continue
+    is_new_repo = old_key is None
 
-        msg = (
-            "New Release\n\n"
-            f"Repo: {repo}\n"
-            f"Title: {name}\n"
-            f"Version: {tag}\n"
-            f"Published: {published}\n\n"
-            f"{url}"
-        )
+    # 先更新状态
+    state[repo] = release_key
 
-        telegram_send(msg)
+    # 新 repo 不通知
+    if is_new_repo:
+        continue
+
+    msg = (
+        "New Release\n\n"
+        f"Repo: {repo}\n"
+        f"Title: {name}\n"
+        f"Version: {tag}\n"
+        f"Published: {published}\n\n"
+        f"{url}"
+    )
+
+    telegram_send(msg)
 
         state[repo] = release_key
 
