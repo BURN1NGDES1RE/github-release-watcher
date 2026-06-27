@@ -43,7 +43,15 @@ def telegram_send(text, retries=3):
         time.sleep(2)
 
     return False
-
+    
+def format_time(utc_time):
+    try:
+        dt = datetime.fromisoformat(
+            utc_time.replace("Z", "+00:00")
+        )
+        return dt.strftime("%Y-%m-%d %H:%M")
+    except Exception:
+        return utc_time
 
 # =========================
 # Release Notes Cleaner
@@ -159,9 +167,13 @@ def main():
             continue
 
         tag = release.get("tag_name", "")
-        published = release.get("published_at", "")
+        published = format_time(
+            release.get("published_at", "")
+        )
         url = release.get("html_url", "")
-        name = release.get("name") or "Untitled"
+        notes = extract_release_notes(
+            release.get("body", "")
+        )
 
         release_key = f"{tag}@{published}"
         old_key = state.get(repo)
