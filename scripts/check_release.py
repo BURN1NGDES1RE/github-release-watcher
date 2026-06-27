@@ -1,7 +1,7 @@
 import json
 import os
-import time
 import re
+import time
 from pathlib import Path
 from datetime import datetime
 import requests
@@ -38,47 +38,81 @@ def telegram_send(text, retries=3):
 
 
 # =========================
-# Time convert
+# Time
 # =========================
-def format_time(utc_time):
+def format_time(utc):
     try:
-        dt = datetime.fromisoformat(utc_time.replace("Z", "+00:00"))
+        dt = datetime.fromisoformat(utc.replace("Z", "+00:00"))
         return dt.strftime("%Y-%m-%d %H:%M")
     except:
-        return utc_time
+        return utc
 
 
 # =========================
-# Release notes (safe parser)
+# Clean HTML (v6.9 key fix)
 # =========================
-def extract_release_notes(body, max_items=6):
+def clean_line(line: str) -> str:
+    # remove html tags
+    line = re.sub(r"<[^>]+>", "", line)
+
+    # decode common noise
+    line = line.replace("&nbsp;", " ").strip()
+
+    return line
+
+
+# =========================
+# Release Notes Parser v6.9
+# =========================
+def extract_release_notes(body, max_items=8):
+
     if not body:
         return "No release notes"
 
-    lines = []
+    output = []
     count = 0
 
     for raw in body.splitlines():
-        line = raw.strip()
+
+        line = clean_line(raw).strip()
+
         if not line:
             continue
 
-        if any(x in line.lower() for x in ["chore:", "ci:", "merged pull request"]):
+        low = line.lower()
+
+        # skip noise
+        if any(x in low for x in [
+            "contributors",
+            "sponsors",
+            "assets",
+        ]):
             continue
 
-        line = re.sub(r"^(\d+\.|-|\*)\s*", "", line)
+        # skip full html artifacts
+        if line.startswith("<div") or line.startswith("</div"):
+            continue
+
+        if line.startswith("<img"):
+            continue
+
+        # remove @user
         line = re.sub(r"@\w+", "", line).strip()
 
-        if len(line) < 3:
+        # convert list formats
+        line = re.sub(r"^(\d+\.|-|\*)\s*", "", line)
+
+        if len(line) < 2:
             continue
 
-        lines.append(f"- {line}")
+        output.append(f"- {line}")
         count += 1
 
         if count >= max_items:
+            output.append("... more changes in release page")
             break
 
-    return "\n".join(lines) if lines else "No release notes"
+    return "\n".join(output) if output else "No release notes"
 
 
 # =========================
@@ -108,29 +142,28 @@ def get_release(repo):
 # Main
 # =========================
 def main():
+
     state = load_state()
 
     repos = [x.strip() for x in open(WATCHLIST) if x.strip()]
 
     for repo in repos:
+
         r = get_release(repo)
         if not r:
             continue
 
         tag = r.get("tag_name", "")
-        published_raw = r.get("published_at", "")
-        published = format_time(published_raw)
-        url = r.get("html_url", "")
         body = r.get("body", "")
+        url = r.get("html_url", "")
+        published = format_time(r.get("published_at", ""))
 
-        # ✅ stable key（修复 v6.7 bug）
-        release_key = f"{tag}@{published_raw}"
+        key = f"{tag}@{r.get('id')}"
 
-        old = state.get(repo)
-        state[repo] = release_key
+        if state.get(repo) == key:
+            continue
 
-        # ❗重要：不再 silent skip
-        is_new = old is None
+        state[repo] = key
 
         notes = extract_release_notes(body)
 
