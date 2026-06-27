@@ -15,7 +15,7 @@ CHAT_ID = os.environ["CHAT_ID"]
 
 
 # =========================
-# Telegram Sender
+# Telegram Sender (stable)
 # =========================
 def telegram_send(text, retries=3):
     url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
@@ -27,13 +27,14 @@ def telegram_send(text, retries=3):
         "disable_web_page_preview": True,
     }
 
-    for _ in range(retries):
+    for i in range(retries):
         try:
             r = requests.post(url, json=payload, timeout=30)
             if r.status_code == 200:
                 return True
-        except:
-            pass
+            print(f"[Telegram] status={r.status_code} retry={i+1}")
+        except Exception as e:
+            print(f"[Telegram ERROR] {e}")
         time.sleep(2)
 
     return False
@@ -55,12 +56,12 @@ def format_time(utc_time):
 
 
 # =========================
-# Release Notes Parser
+# Release Notes Parser (stable)
 # =========================
 def extract_release_notes(body, max_items=6):
 
     if not body:
-        return ""
+        return "No structured changes detected"
 
     lines = []
     count = 0
@@ -73,7 +74,6 @@ def extract_release_notes(body, max_items=6):
         if line.startswith(("![", "<img", "###")):
             continue
 
-        # 支持 - * + 以及 1. 2. 3.
         is_item = (
             line.startswith(("-", "*", "+")) or
             re.match(r"^\d+\.\s+", line)
@@ -82,7 +82,7 @@ def extract_release_notes(body, max_items=6):
         if not is_item:
             continue
 
-        # 清洗
+        # clean
         line = re.sub(r"^\d+\.\s*", "", line)
         line = re.sub(r"\s*By\s+@\w+", "", line)
         line = re.sub(r"\(#\d+\)", "", line)
@@ -98,17 +98,17 @@ def extract_release_notes(body, max_items=6):
         if count >= max_items:
             break
 
-    return "\n".join(lines)
+    return "\n".join(lines) if lines else "No structured changes detected"
 
 
 # =========================
-# GitHub API
+# GitHub API (stable + logs)
 # =========================
 def get_latest_release(repo):
 
     headers = {
         "Accept": "application/vnd.github+json",
-        "User-Agent": "release-watcher-v6.4"
+        "User-Agent": "release-watcher-v6.4-stable"
     }
 
     try:
@@ -119,8 +119,8 @@ def get_latest_release(repo):
         )
         if r.status_code == 200:
             return r.json()
-    except:
-        pass
+    except Exception as e:
+        print(f"[GitHub latest error] {repo}: {e}")
 
     try:
         r = requests.get(
@@ -131,11 +131,17 @@ def get_latest_release(repo):
         if r.status_code == 200:
             data = r.json()
             data = [x for x in data if not x.get("draft")]
-            data.sort(key=lambda x: x.get("published_at") or "", reverse=True)
+
+            data.sort(
+                key=lambda x: x.get("published_at") or "",
+                reverse=True
+            )
+
             if data:
                 return data[0]
-    except:
-        pass
+
+    except Exception as e:
+        print(f"[GitHub fallback error] {repo}: {e}")
 
     return None
 
@@ -186,47 +192,52 @@ def main():
 
     for repo in repos:
 
+        print(f"[CHECK] {repo}")
+
         release = get_latest_release(repo)
         if not release:
+            print(f"[SKIP] no release: {repo}")
             continue
 
         key = build_key(repo, release)
         old = state.get(repo)
-
-        if old == key:
-            continue
-
-        is_first = old is None
-
-        state[repo] = key
-
-        if is_first:
-            continue
 
         version = get_version(release)
         published = format_time(release.get("published_at", ""))
         url = release.get("html_url", "")
         body = release.get("body", "")
 
+        is_first = old is None
+
+        # update state FIRST (fix v6.4 bug)
+        state[repo] = key
+
+        if old == key:
+            print(f"[SKIP] same release: {repo}")
+            continue
+
+        # first run only initialize, no notify
+        if is_first:
+            print(f"[INIT] {repo}")
+            continue
+
         notes = extract_release_notes(body)
 
-        # =========================
-        # v6.4 UI FORMAT（你要求的）
-        # =========================
         msg = (
             f"<b>{repo}</b>\n\n"
             f"Version: {version}\n"
             f"Published: {published}\n\n"
+            f"Release Notes\n"
+            f"{notes}\n\n"
+            f"Release URL\n"
+            f"{url}"
         )
-
-        if notes:
-            msg += f"Release Notes\n{notes}\n\n"
-
-        msg += f"Release URL\n{url}"
 
         msg = re.sub(r"\n{3,}", "\n\n", msg).strip()
 
-        telegram_send(msg)
+        ok = telegram_send(msg)
+
+        print(f"[SEND] {repo} success={ok}")
 
     save_state(state)
 
