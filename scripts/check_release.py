@@ -1,6 +1,7 @@
 import json
 import os
 import time
+import re
 from pathlib import Path
 import requests
 
@@ -35,68 +36,73 @@ def telegram_send(text, retries=3):
 
 
 # =========================
-# Release Notes Cleaner (UI版)
+# v5.2 Release Notes Engine
 # =========================
 def extract_release_notes(body, max_items=6):
 
     if not body:
         return "No release notes available"
 
-    output = []
-    skip_mode = False
+    lines = []
     count = 0
 
-    skip_sections = {
-        "contributors",
-        "distribution notes",
-        "chore",
-        "ci",
-        "build",
-        "misc",
-        "other"
-    }
+    for raw in body.splitlines():
 
-    for line in body.splitlines():
-        line = line.strip()
+        line = raw.strip()
         if not line:
             continue
 
-        # section header
-        if line.startswith("### "):
-            section = line.replace("###", "").strip().lower()
-            skip_mode = section in skip_sections
-            continue
-
-        if skip_mode:
-            continue
-
-        # noise filter
+        # 去掉图片 / HTML
         if line.startswith(("![", "<img")):
             continue
 
-        if line.lower().startswith(("chore:", "ci:")):
+        # 去掉标题
+        if line.startswith("###"):
             continue
 
-        # keep list items only
-        if line.startswith(("- ", "* ")):
-            output.append(line)
-            count += 1
+        # 只保留列表
+        if not line.startswith(("-", "*", "+")):
+            continue
 
-            if count >= max_items:
-                output.append("... more changes in release page")
-                break
+        # =========================
+        # 语义清洗（核心升级）
+        # =========================
 
-    return "\n".join(output) if output else "No significant changes listed"
+        # 去 author
+        line = re.sub(r"\s*By\s+@\w+", "", line)
+
+        # 去 PR
+        line = re.sub(r"\(#\d+\)", "", line)
+
+        # 去 commit hash
+        line = re.sub(r"\b[0-9a-f]{7,40}\b", "", line)
+
+        # 去多余空格
+        line = re.sub(r"\s+", " ", line).strip()
+
+        if not line or line in {"-", "*", "+"}:
+            continue
+
+        lines.append(line)
+        count += 1
+
+        if count >= max_items:
+            break
+
+    if not lines:
+        return "No significant changes listed"
+
+    return "\n".join(lines)
 
 
 # =========================
-# GitHub API v5 (稳定版)
+# GitHub API v5 stable
 # =========================
 def get_latest_release(repo):
 
     headers = {
         "Accept": "application/vnd.github+json",
-        "User-Agent": "release-watcher-v5.1"
+        "User-Agent": "release-watcher-v5.2"
     }
 
     # 1. latest
@@ -111,7 +117,7 @@ def get_latest_release(repo):
     except:
         pass
 
-    # 2. full releases fallback
+    # 2. full releases
     try:
         r = requests.get(
             f"https://api.github.com/repos/{repo}/releases",
@@ -203,9 +209,6 @@ def main():
 
         notes = extract_release_notes(body)
 
-        # =========================
-        # v5.1 UI（恢复你要的结构）
-        # =========================
         msg = (
             "New Release\n\n"
             f"Repo: {repo}\n\n"
