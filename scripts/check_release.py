@@ -134,11 +134,11 @@ def main():
         notes = extract_release_notes(body)
 
         msg = (
-            f"{repo} New Release\n\n"
+            f"{repo}\n\n"
             f"Version: {tag}\n"
             f"Published: {published}\n\n"
             f"Release Notes\n{notes}\n\n"
-            f"Release URL\n{url}"
+            f"Release Page\n{url}"
         )
 
         telegram_send(msg)
