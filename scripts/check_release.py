@@ -2,7 +2,6 @@ import json
 import os
 import time
 from pathlib import Path
-
 import requests
 
 WATCHLIST = "watchlist.txt"
@@ -23,7 +22,7 @@ CHAT_ID = os.environ["CHAT_ID"]
 
 
 # =========================
-# Telegram Sender
+# Telegram sender
 # =========================
 def telegram_send(text, retries=3):
     url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
@@ -47,13 +46,54 @@ def telegram_send(text, retries=3):
 
 
 # =========================
-# GitHub API (关键修复)
+# Clean release notes (核心优化)
+# =========================
+def extract_release_notes(body, max_items=6):
+
+    if not body:
+        return "No release notes available"
+
+    output = []
+    skip_mode = False
+    count = 0
+
+    for line in body.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+
+        # section filter
+        if line.startswith("### "):
+            section = line.replace("###", "").strip().lower()
+            skip_mode = section in SKIP_SECTIONS
+            continue
+
+        if skip_mode:
+            continue
+
+        # noise filter
+        if line.startswith(("![", "<img")):
+            continue
+
+        if line.lower().startswith(("chore:", "ci:")):
+            continue
+
+        # only keep list items
+        if line.startswith(("- ", "* ")):
+            output.append(line)
+            count += 1
+
+            if count >= max_items:
+                output.append("... more changes in release page")
+                break
+
+    return "\n".join(output) if output else "No significant changes listed"
+
+
+# =========================
+# GitHub API
 # =========================
 def get_latest_release(repo):
-    """
-    使用 /releases/latest（最稳定）
-    避免 /releases 排序问题
-    """
     url = f"https://api.github.com/repos/{repo}/releases/latest"
 
     try:
@@ -87,7 +127,6 @@ def load_state():
 
 def save_state(state):
     Path(STATE_FILE).parent.mkdir(parents=True, exist_ok=True)
-
     with open(STATE_FILE, "w", encoding="utf-8") as f:
         json.dump(state, f, indent=2, sort_keys=True)
 
@@ -108,35 +147,36 @@ def main():
         if not release:
             continue
 
-        # ===== stable identity =====
         release_id = str(release.get("id"))
         tag = release.get("tag_name", "")
+        name = release.get("name") or "Untitled"
         published = release.get("published_at", "")
         url = release.get("html_url", "")
-        name = release.get("name") or "Untitled"
+        body = release.get("body", "")
 
         old_id = state.get(repo)
 
-        # 已处理过
         if old_id == release_id:
             continue
 
-        # 是否第一次见到该 repo
         is_first_seen = old_id is None
 
-        # 先写 state（避免重复触发）
         state[repo] = release_id
 
-        # 新 repo 不通知
         if is_first_seen:
             continue
 
+        notes = extract_release_notes(body)
+
         msg = (
-            "🚀 New Release\n\n"
+            f"New Release\n\n"
             f"Repo: {repo}\n"
-            f"Title: {name}\n"
             f"Version: {tag}\n"
+            f"Title: {name}\n"
             f"Published: {published}\n\n"
+            f"Release Notes\n"
+            f"{notes}\n\n"
+            f"Release URL\n"
             f"{url}"
         )
 
