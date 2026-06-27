@@ -35,64 +35,115 @@ def telegram_send(text, retries=3):
 
 
 # =========================
-# GitHub API v5 (核心升级)
+# Release Notes Cleaner (UI版)
+# =========================
+def extract_release_notes(body, max_items=6):
+
+    if not body:
+        return "No release notes available"
+
+    output = []
+    skip_mode = False
+    count = 0
+
+    skip_sections = {
+        "contributors",
+        "distribution notes",
+        "chore",
+        "ci",
+        "build",
+        "misc",
+        "other"
+    }
+
+    for line in body.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+
+        # section header
+        if line.startswith("### "):
+            section = line.replace("###", "").strip().lower()
+            skip_mode = section in skip_sections
+            continue
+
+        if skip_mode:
+            continue
+
+        # noise filter
+        if line.startswith(("![", "<img")):
+            continue
+
+        if line.lower().startswith(("chore:", "ci:")):
+            continue
+
+        # keep list items only
+        if line.startswith(("- ", "* ")):
+            output.append(line)
+            count += 1
+
+            if count >= max_items:
+                output.append("... more changes in release page")
+                break
+
+    return "\n".join(output) if output else "No significant changes listed"
+
+
+# =========================
+# GitHub API v5 (稳定版)
 # =========================
 def get_latest_release(repo):
 
     headers = {
         "Accept": "application/vnd.github+json",
-        "User-Agent": "release-watcher-v5"
+        "User-Agent": "release-watcher-v5.1"
     }
 
-    # -------------------------
-    # 1. latest API（最快）
-    # -------------------------
+    # 1. latest
     try:
-        url = f"https://api.github.com/repos/{repo}/releases/latest"
-        r = requests.get(url, headers=headers, timeout=30)
+        r = requests.get(
+            f"https://api.github.com/repos/{repo}/releases/latest",
+            headers=headers,
+            timeout=30,
+        )
         if r.status_code == 200:
             return r.json()
     except:
         pass
 
-    # -------------------------
-    # 2. full releases（最可靠）
-    # -------------------------
+    # 2. full releases fallback
     try:
-        url = f"https://api.github.com/repos/{repo}/releases"
-        r = requests.get(url, headers=headers, timeout=30)
-
+        r = requests.get(
+            f"https://api.github.com/repos/{repo}/releases",
+            headers=headers,
+            timeout=30,
+        )
         if r.status_code == 200:
             data = r.json()
-
-            if not data:
-                return None
-
-            # 排除 draft，排序保证最新
-            data = [x for x in data if not x.get("draft")]
-            data.sort(key=lambda x: x.get("published_at") or "", reverse=True)
-
             if data:
+                data = [x for x in data if not x.get("draft")]
+                data.sort(key=lambda x: x.get("published_at") or "", reverse=True)
                 return data[0]
     except:
         pass
 
-    # -------------------------
-    # 3. tags fallback（兜底）
-    # -------------------------
+    # 3. tags fallback
     try:
-        url = f"https://api.github.com/repos/{repo}/tags"
-        r = requests.get(url, headers=headers, timeout=30)
-
+        r = requests.get(
+            f"https://api.github.com/repos/{repo}/tags",
+            headers=headers,
+            timeout=30,
+        )
         if r.status_code == 200:
             tags = r.json()
             if tags:
+                t = tags[0]["name"]
                 return {
-                    "tag_name": tags[0]["name"],
-                    "name": tags[0]["name"],
+                    "tag_name": t,
+                    "name": t,
                     "html_url": f"https://github.com/{repo}/releases",
                     "published_at": "",
-                    "id": tags[0]["name"]
+                    "id": t
                 }
     except:
         pass
@@ -112,7 +163,6 @@ def load_state():
 
 def save_state(state):
     Path(STATE_FILE).parent.mkdir(parents=True, exist_ok=True)
-
     with open(STATE_FILE, "w", encoding="utf-8") as f:
         json.dump(state, f, indent=2, sort_keys=True)
 
@@ -135,35 +185,34 @@ def main():
 
         tag = release.get("tag_name", "")
         name = release.get("name") or tag
-        url = release.get("html_url", "")
         published = release.get("published_at", "")
+        url = release.get("html_url", "")
+        body = release.get("body", "")
 
-        # =========================
-        # v5：唯一稳定 key
-        # =========================
-        release_key = release.get("id") or f"{repo}@{tag}"
+        release_id = str(release.get("id") or f"{repo}@{tag}")
+        old_id = state.get(repo)
 
-        old_key = state.get(repo)
-
-        # 已处理
-        if old_key == release_key:
+        if old_id == release_id:
             continue
 
-        is_first_seen = old_key is None
+        is_first = old_id is None
+        state[repo] = release_id
 
-        state[repo] = release_key
-
-        # 首次只记录不通知
-        if is_first_seen:
+        if is_first:
             continue
 
+        notes = extract_release_notes(body)
+
+        # =========================
+        # v5.1 UI（恢复你要的结构）
+        # =========================
         msg = (
             "New Release\n\n"
-            f"Repo: {repo}\n"
-            f"Version: {tag}\n"
-            f"Title: {name}\n"
-            f"Published: {published}\n\n"
-            f"{url}"
+            f"Repo: {repo}\n\n"
+            f"Version\n{tag}\n\n"
+            f"Published\n{published}\n\n"
+            f"Release Notes\n\n{notes}\n\n"
+            f"Release URL\n{url}"
         )
 
         telegram_send(msg)
