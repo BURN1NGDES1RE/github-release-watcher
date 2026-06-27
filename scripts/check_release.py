@@ -4,6 +4,7 @@ import time
 import re
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
+
 import requests
 
 WATCHLIST = "watchlist.txt"
@@ -22,6 +23,7 @@ def telegram_send(text, retries=3):
     payload = {
         "chat_id": CHAT_ID,
         "text": text,
+        "parse_mode": "HTML",
         "disable_web_page_preview": True,
     }
 
@@ -58,7 +60,7 @@ def format_time(utc_time):
 def extract_release_notes(body, max_items=6):
 
     if not body:
-        return "No structured changes detected"
+        return ""
 
     lines = []
     count = 0
@@ -68,13 +70,10 @@ def extract_release_notes(body, max_items=6):
         if not line:
             continue
 
-        if line.startswith(("![", "<img")):
+        if line.startswith(("![", "<img", "###")):
             continue
 
-        if line.startswith("###"):
-            continue
-
-        # 支持 - / * / + / 1. 2. 3.
+        # 支持 - * + 以及 1. 2. 3.
         is_item = (
             line.startswith(("-", "*", "+")) or
             re.match(r"^\d+\.\s+", line)
@@ -83,7 +82,7 @@ def extract_release_notes(body, max_items=6):
         if not is_item:
             continue
 
-        # 清洗内容
+        # 清洗
         line = re.sub(r"^\d+\.\s*", "", line)
         line = re.sub(r"\s*By\s+@\w+", "", line)
         line = re.sub(r"\(#\d+\)", "", line)
@@ -93,13 +92,13 @@ def extract_release_notes(body, max_items=6):
         if not line:
             continue
 
-        lines.append(line)
+        lines.append(f"- {line}")
         count += 1
 
         if count >= max_items:
             break
 
-    return "\n".join(lines) if lines else "No structured changes detected"
+    return "\n".join(lines)
 
 
 # =========================
@@ -109,10 +108,9 @@ def get_latest_release(repo):
 
     headers = {
         "Accept": "application/vnd.github+json",
-        "User-Agent": "release-watcher-v6.3"
+        "User-Agent": "release-watcher-v6.4"
     }
 
-    # latest
     try:
         r = requests.get(
             f"https://api.github.com/repos/{repo}/releases/latest",
@@ -124,7 +122,6 @@ def get_latest_release(repo):
     except:
         pass
 
-    # releases fallback
     try:
         r = requests.get(
             f"https://api.github.com/repos/{repo}/releases",
@@ -160,7 +157,7 @@ def save_state(state):
 
 
 # =========================
-# Version normalize (你要求的核心修复)
+# Version
 # =========================
 def get_version(release):
     return (
@@ -213,15 +210,19 @@ def main():
 
         notes = extract_release_notes(body)
 
+        # =========================
+        # v6.4 UI FORMAT（你要求的）
+        # =========================
         msg = (
-            f"{repo} New Release\n"
+            f"<b>{repo}</b>\n\n"
             f"Version: {version}\n"
             f"Published: {published}\n\n"
-            f"Release Notes\n"
-            f"{notes}\n\n"
-            f"Release URL\n"
-            f"{url}"
         )
+
+        if notes:
+            msg += f"Release Notes\n{notes}\n\n"
+
+        msg += f"Release URL\n{url}"
 
         msg = re.sub(r"\n{3,}", "\n\n", msg).strip()
 
