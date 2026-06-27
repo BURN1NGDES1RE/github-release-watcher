@@ -13,6 +13,9 @@ TG_TOKEN = os.environ["TG_TOKEN"]
 CHAT_ID = os.environ["CHAT_ID"]
 
 
+# =========================
+# Telegram
+# =========================
 def telegram_send(text, retries=3):
     url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
 
@@ -34,6 +37,9 @@ def telegram_send(text, retries=3):
     return False
 
 
+# =========================
+# Time convert
+# =========================
 def format_time(utc_time):
     try:
         dt = datetime.fromisoformat(utc_time.replace("Z", "+00:00"))
@@ -43,54 +49,41 @@ def format_time(utc_time):
 
 
 # =========================
-# Smart parser v6.7
+# Release notes (safe parser)
 # =========================
-def extract_release_notes(body, max_items=8):
+def extract_release_notes(body, max_items=6):
     if not body:
         return "No release notes"
 
-    sections = {
-        "feat": [],
-        "fix": [],
-        "opt": [],
-        "other": []
-    }
+    lines = []
+    count = 0
 
-    for line in body.splitlines():
-        line = line.strip()
+    for raw in body.splitlines():
+        line = raw.strip()
         if not line:
             continue
 
-        line = re.sub(r"@\w+", "", line)  # remove @author
-
-        low = line.lower()
-
-        if any(k in low for k in ["chore:", "ci:", "merged pull request"]):
+        if any(x in line.lower() for x in ["chore:", "ci:", "merged pull request"]):
             continue
 
-        item = re.sub(r"^(\d+\.|-|\*)\s*", "", line)
+        line = re.sub(r"^(\d+\.|-|\*)\s*", "", line)
+        line = re.sub(r"@\w+", "", line).strip()
 
-        if any(k in low for k in ["新增", "feat", "add"]):
-            sections["feat"].append(item)
-        elif any(k in low for k in ["修复", "fix"]):
-            sections["fix"].append(item)
-        elif any(k in low for k in ["优化", "optimize", "improve"]):
-            sections["opt"].append(item)
-        else:
-            sections["other"].append(item)
+        if len(line) < 3:
+            continue
 
-    output = []
+        lines.append(f"- {line}")
+        count += 1
 
-    for title, items in sections.items():
-        for i in items:
-            output.append(f"- {i}")
-            if len(output) >= max_items:
-                output.append("... more changes in release page")
-                return "\n".join(output)
+        if count >= max_items:
+            break
 
-    return "\n".join(output) if output else "No release notes"
+    return "\n".join(lines) if lines else "No release notes"
 
 
+# =========================
+# State
+# =========================
 def load_state():
     if Path(STATE_FILE).exists():
         return json.load(open(STATE_FILE, "r", encoding="utf-8"))
@@ -102,12 +95,18 @@ def save_state(state):
     json.dump(state, open(STATE_FILE, "w", encoding="utf-8"), indent=2)
 
 
+# =========================
+# GitHub
+# =========================
 def get_release(repo):
     url = f"https://api.github.com/repos/{repo}/releases/latest"
     r = requests.get(url, timeout=30)
     return r.json() if r.status_code == 200 else None
 
 
+# =========================
+# Main
+# =========================
 def main():
     state = load_state()
 
@@ -119,17 +118,19 @@ def main():
             continue
 
         tag = r.get("tag_name", "")
-        rid = str(r.get("id"))
-        body = r.get("body", "")
-        published = format_time(r.get("published_at", ""))
+        published_raw = r.get("published_at", "")
+        published = format_time(published_raw)
         url = r.get("html_url", "")
+        body = r.get("body", "")
 
-        key = f"{tag}@{rid}"
+        # ✅ stable key（修复 v6.7 bug）
+        release_key = f"{tag}@{published_raw}"
 
-        if state.get(repo) == key:
-            continue
+        old = state.get(repo)
+        state[repo] = release_key
 
-        state[repo] = key
+        # ❗重要：不再 silent skip
+        is_new = old is None
 
         notes = extract_release_notes(body)
 
