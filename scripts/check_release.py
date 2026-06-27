@@ -6,10 +6,7 @@ from pathlib import Path
 import requests
 
 WATCHLIST = "watchlist.txt"
-STATE_FILE = "release_state.json"
-
-TG_TOKEN = os.environ["TG_TOKEN"]
-CHAT_ID = os.environ["CHAT_ID"]
+STATE_FILE = "data/release_state.json"
 
 SKIP_SECTIONS = {
     "contributors",
@@ -21,9 +18,12 @@ SKIP_SECTIONS = {
     "other"
 }
 
+TG_TOKEN = os.environ["TG_TOKEN"]
+CHAT_ID = os.environ["CHAT_ID"]
+
 
 # =========================
-# Telegram
+# Telegram Sender
 # =========================
 def telegram_send(text, retries=3):
     url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
@@ -47,6 +47,35 @@ def telegram_send(text, retries=3):
 
 
 # =========================
+# GitHub API (关键修复)
+# =========================
+def get_latest_release(repo):
+    """
+    使用 /releases/latest（最稳定）
+    避免 /releases 排序问题
+    """
+    url = f"https://api.github.com/repos/{repo}/releases/latest"
+
+    try:
+        r = requests.get(
+            url,
+            headers={
+                "Accept": "application/vnd.github+json",
+                "User-Agent": "release-watcher-v4"
+            },
+            timeout=30,
+        )
+
+        if r.status_code != 200:
+            return None
+
+        return r.json()
+
+    except Exception:
+        return None
+
+
+# =========================
 # State
 # =========================
 def load_state():
@@ -61,42 +90,6 @@ def save_state(state):
 
     with open(STATE_FILE, "w", encoding="utf-8") as f:
         json.dump(state, f, indent=2, sort_keys=True)
-
-
-# =========================
-# GitHub API (stable)
-# =========================
-def get_latest_release(repo):
-    url = f"https://api.github.com/repos/{repo}/releases/latest"
-
-    try:
-        r = requests.get(
-            url,
-            headers={
-                "Accept": "application/vnd.github+json",
-                "User-Agent": "release-watcher-v4"
-            },
-            timeout=30,
-        )
-
-        if r.status_code == 200:
-            return r.json()
-
-        # fallback
-        url2 = f"https://api.github.com/repos/{repo}/releases"
-        r = requests.get(url2, timeout=30)
-
-        if r.status_code != 200:
-            return None
-
-        data = r.json()
-        if not data:
-            return None
-
-        return data[0]
-
-    except Exception:
-        return None
 
 
 # =========================
@@ -115,25 +108,24 @@ def main():
         if not release:
             continue
 
+        # ===== stable identity =====
         release_id = str(release.get("id"))
-        html_url = release.get("html_url", "")
         tag = release.get("tag_name", "")
-        name = release.get("name") or "Untitled"
         published = release.get("published_at", "")
+        url = release.get("html_url", "")
+        name = release.get("name") or "Untitled"
 
-        # ⭐ v4 核心 key
-        release_key = str(release["id"])
+        old_id = state.get(repo)
 
-        old_key = state.get(repo)
-
-        # 已处理
-        if old_key == release_key:
+        # 已处理过
+        if old_id == release_id:
             continue
 
-        is_first_seen = old_key is None
+        # 是否第一次见到该 repo
+        is_first_seen = old_id is None
 
-        # 先写 state（防重复触发）
-        state[repo] = release_key
+        # 先写 state（避免重复触发）
+        state[repo] = release_id
 
         # 新 repo 不通知
         if is_first_seen:
@@ -145,7 +137,7 @@ def main():
             f"Title: {name}\n"
             f"Version: {tag}\n"
             f"Published: {published}\n\n"
-            f"{html_url}"
+            f"{url}"
         )
 
         telegram_send(msg)
