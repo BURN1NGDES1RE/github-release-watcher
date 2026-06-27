@@ -14,7 +14,7 @@ CHAT_ID = os.environ["CHAT_ID"]
 
 
 # =========================
-# Telegram
+# Telegram sender
 # =========================
 def telegram_send(text, retries=3):
     url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
@@ -38,31 +38,42 @@ def telegram_send(text, retries=3):
 
 
 # =========================
-# Time
+# Time format
 # =========================
-def format_time(utc):
+def format_time(utc_time):
     try:
-        dt = datetime.fromisoformat(utc.replace("Z", "+00:00"))
+        dt = datetime.fromisoformat(utc_time.replace("Z", "+00:00"))
         return dt.strftime("%Y-%m-%d %H:%M")
     except:
-        return utc
+        return utc_time
 
 
 # =========================
-# Clean HTML (v6.9 key fix)
+# Clean line (v6.9.2 핵心)
 # =========================
 def clean_line(line: str) -> str:
-    # remove html tags
+
+    # remove HTML tags
     line = re.sub(r"<[^>]+>", "", line)
 
-    # decode common noise
-    line = line.replace("&nbsp;", " ").strip()
+    # remove @username
+    line = re.sub(r"@\w+", "", line)
+
+    # remove empty parentheses (normal + Chinese)
+    line = re.sub(r"\(\s*\)", "", line)
+    line = re.sub(r"（\s*）", "", line)
+
+    # remove leading list markers
+    line = re.sub(r"^(\d+\.|-|\*)\s*", "", line)
+
+    # collapse spaces
+    line = re.sub(r"\s{2,}", " ", line).strip()
 
     return line
 
 
 # =========================
-# Release Notes Parser v6.9
+# Release notes parser
 # =========================
 def extract_release_notes(body, max_items=8):
 
@@ -74,33 +85,20 @@ def extract_release_notes(body, max_items=8):
 
     for raw in body.splitlines():
 
-        line = clean_line(raw).strip()
+        line = clean_line(raw)
 
         if not line:
             continue
 
         low = line.lower()
 
-        # skip noise
+        # skip noise sections
         if any(x in low for x in [
             "contributors",
             "sponsors",
-            "assets",
+            "github actions",
         ]):
             continue
-
-        # skip full html artifacts
-        if line.startswith("<div") or line.startswith("</div"):
-            continue
-
-        if line.startswith("<img"):
-            continue
-
-        # remove @user
-        line = re.sub(r"@\w+", "", line).strip()
-
-        # convert list formats
-        line = re.sub(r"^(\d+\.|-|\*)\s*", "", line)
 
         if len(line) < 2:
             continue
@@ -126,11 +124,11 @@ def load_state():
 
 def save_state(state):
     Path(STATE_FILE).parent.mkdir(parents=True, exist_ok=True)
-    json.dump(state, open(STATE_FILE, "w", encoding="utf-8"), indent=2)
+    json.dump(state, open(STATE_FILE, "w", encoding="utf-8"), indent=2, sort_keys=True)
 
 
 # =========================
-# GitHub
+# GitHub API
 # =========================
 def get_release(repo):
     url = f"https://api.github.com/repos/{repo}/releases/latest"
@@ -149,21 +147,23 @@ def main():
 
     for repo in repos:
 
-        r = get_release(repo)
-        if not r:
+        release = get_release(repo)
+        if not release:
             continue
 
-        tag = r.get("tag_name", "")
-        body = r.get("body", "")
-        url = r.get("html_url", "")
-        published = format_time(r.get("published_at", ""))
+        tag = release.get("tag_name", "")
+        body = release.get("body", "")
+        url = release.get("html_url", "")
+        published = format_time(release.get("published_at", ""))
 
-        key = f"{tag}@{r.get('id')}"
+        release_key = f"{tag}@{release.get('id')}"
 
-        if state.get(repo) == key:
+        old = state.get(repo)
+
+        if old == release_key:
             continue
 
-        state[repo] = key
+        state[repo] = release_key
 
         notes = extract_release_notes(body)
 
