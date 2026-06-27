@@ -11,8 +11,9 @@ STATE_FILE = "data/release_state.json"
 TG_TOKEN = os.environ["TG_TOKEN"]
 CHAT_ID = os.environ["CHAT_ID"]
 
+
 # =========================
-# Telegram
+# Telegram Sender
 # =========================
 def telegram_send(text, retries=3):
     url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
@@ -28,7 +29,7 @@ def telegram_send(text, retries=3):
             r = requests.post(url, json=payload, timeout=30)
             if r.status_code == 200:
                 return True
-        except Exception:
+        except:
             pass
         time.sleep(2)
 
@@ -36,7 +37,7 @@ def telegram_send(text, retries=3):
 
 
 # =========================
-# v5.2 Release Notes Engine
+# Release Notes Cleaner (v6)
 # =========================
 def extract_release_notes(body, max_items=6):
 
@@ -47,40 +48,26 @@ def extract_release_notes(body, max_items=6):
     count = 0
 
     for raw in body.splitlines():
-
         line = raw.strip()
         if not line:
             continue
 
-        # 去掉图片 / HTML
         if line.startswith(("![", "<img")):
             continue
 
-        # 去掉标题
         if line.startswith("###"):
             continue
 
-        # 只保留列表
         if not line.startswith(("-", "*", "+")):
             continue
 
-        # =========================
-        # 语义清洗（核心升级）
-        # =========================
-
-        # 去 author
+        # clean noise
         line = re.sub(r"\s*By\s+@\w+", "", line)
-
-        # 去 PR
         line = re.sub(r"\(#\d+\)", "", line)
-
-        # 去 commit hash
         line = re.sub(r"\b[0-9a-f]{7,40}\b", "", line)
-
-        # 去多余空格
         line = re.sub(r"\s+", " ", line).strip()
 
-        if not line or line in {"-", "*", "+"}:
+        if not line:
             continue
 
         lines.append(line)
@@ -89,23 +76,20 @@ def extract_release_notes(body, max_items=6):
         if count >= max_items:
             break
 
-    if not lines:
-        return "No significant changes listed"
-
-    return "\n".join(lines)
+    return "\n".join(lines) if lines else "No significant changes listed"
 
 
 # =========================
-# GitHub API v5 stable
+# GitHub API (v6 stable resolver)
 # =========================
 def get_latest_release(repo):
 
     headers = {
         "Accept": "application/vnd.github+json",
-        "User-Agent": "release-watcher-v5.2"
+        "User-Agent": "release-watcher-v6"
     }
 
-    # 1. latest
+    # 1. latest endpoint
     try:
         r = requests.get(
             f"https://api.github.com/repos/{repo}/releases/latest",
@@ -126,9 +110,9 @@ def get_latest_release(repo):
         )
         if r.status_code == 200:
             data = r.json()
+            data = [x for x in data if not x.get("draft")]
+            data.sort(key=lambda x: x.get("published_at") or "", reverse=True)
             if data:
-                data = [x for x in data if not x.get("draft")]
-                data.sort(key=lambda x: x.get("published_at") or "", reverse=True)
                 return data[0]
     except:
         pass
@@ -149,7 +133,7 @@ def get_latest_release(repo):
                     "name": t,
                     "html_url": f"https://github.com/{repo}/releases",
                     "published_at": "",
-                    "id": t
+                    "body": "",
                 }
     except:
         pass
@@ -174,6 +158,16 @@ def save_state(state):
 
 
 # =========================
+# Key generator (核心升级)
+# =========================
+def build_release_key(repo, release):
+    tag = release.get("tag_name", "")
+    published = release.get("published_at", "")
+    url = release.get("html_url", "")
+    return f"{repo}|{tag}|{published}|{url}"
+
+
+# =========================
 # Main
 # =========================
 def main():
@@ -189,21 +183,26 @@ def main():
         if not release:
             continue
 
+        new_key = build_release_key(repo, release)
+        old_key = state.get(repo)
+
+        # ❗关键：先判断再写 state
+        is_first = old_key is None
+        is_same = old_key == new_key
+
+        if is_same:
+            continue
+
         tag = release.get("tag_name", "")
         name = release.get("name") or tag
         published = release.get("published_at", "")
         url = release.get("html_url", "")
         body = release.get("body", "")
 
-        release_id = str(release.get("id") or f"{repo}@{tag}")
-        old_id = state.get(repo)
+        # 更新 state（但不会影响当前判断）
+        state[repo] = new_key
 
-        if old_id == release_id:
-            continue
-
-        is_first = old_id is None
-        state[repo] = release_id
-
+        # 首次只记录不通知
         if is_first:
             continue
 
