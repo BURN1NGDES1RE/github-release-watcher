@@ -1,7 +1,6 @@
 import json
 import os
 import time
-import re
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
 
@@ -23,13 +22,12 @@ def telegram_send(text):
     payload = {
         "chat_id": CHAT_ID,
         "text": text,
-        "parse_mode": "HTML",
         "disable_web_page_preview": True,
     }
 
     try:
         r = requests.post(url, json=payload, timeout=30)
-        print("[TG] status =", r.status_code, r.text[:100])
+        print("[TG]", r.status_code, r.text[:80])
         return r.status_code == 200
     except Exception as e:
         print("[TG ERROR]", e)
@@ -49,7 +47,7 @@ def format_time(utc_time):
 
 
 # =========================
-# GitHub
+# GitHub API
 # =========================
 def get_latest_release(repo):
     url = f"https://api.github.com/repos/{repo}/releases/latest"
@@ -58,9 +56,10 @@ def get_latest_release(repo):
         r = requests.get(url, timeout=30)
         print(f"[GITHUB] {repo} status={r.status_code}")
 
-        if r.status_code == 200:
-            return r.json()
-        return None
+        if r.status_code != 200:
+            return None
+
+        return r.json()
 
     except Exception as e:
         print("[GITHUB ERROR]", repo, e)
@@ -73,9 +72,9 @@ def get_latest_release(repo):
 def load_state():
     if Path(STATE_FILE).exists():
         with open(STATE_FILE, "r", encoding="utf-8") as f:
-            s = json.load(f)
-            print("[STATE LOAD]", s)
-            return s
+            data = json.load(f)
+            print("[STATE LOAD]", data)
+            return data
     return {}
 
 
@@ -94,10 +93,10 @@ def get_version(release):
 
 
 # =========================
-# Key
+# KEY (v6.5 核心修复)
 # =========================
-def build_key(repo, release):
-    return f"{repo}|{release.get('tag_name','')}|{release.get('published_at','')}"
+def build_key(release):
+    return str(release.get("id"))
 
 
 # =========================
@@ -110,7 +109,7 @@ def main():
     state = load_state()
 
     if not Path(WATCHLIST).exists():
-        print("[ERROR] watchlist.txt NOT FOUND")
+        print("[ERROR] watchlist missing")
         return
 
     with open(WATCHLIST, "r", encoding="utf-8") as f:
@@ -118,13 +117,9 @@ def main():
 
     print("[WATCHLIST]", repos)
 
-    if not repos:
-        print("[ERROR] repos empty")
-        return
-
     for repo in repos:
 
-        print("\n--------------------------")
+        print("\n----------------------")
         print("[REPO]", repo)
 
         release = get_latest_release(repo)
@@ -133,40 +128,42 @@ def main():
             print("[SKIP] no release")
             continue
 
+        release_id = build_key(release)
+        old_id = state.get(repo)
+
         version = get_version(release)
         published = format_time(release.get("published_at", ""))
         url = release.get("html_url", "")
 
-        key = build_key(repo, release)
-        old = state.get(repo)
+        print("[RELEASE_ID]", release_id)
+        print("[OLD_ID]", old_id)
 
-        print("[KEY]", key)
-        print("[OLD]", old)
-
-        is_first = old is None
-
-        if old == key:
-            print("[SKIP] same release")
+        # 已处理
+        if old_id == release_id:
+            print("[SKIP] same release id")
             continue
 
-        state[repo] = key
+        is_first = old_id is None
+
+        # 先写 state（防重复触发）
+        state[repo] = release_id
 
         if is_first:
-            print("[INIT] first run skip notify")
+            print("[INIT] first seen, skip notify")
             continue
 
         msg = (
-            f"<b>{repo}</b>\n\n"
+            f"{repo}\n"
             f"Version: {version}\n"
             f"Published: {published}\n\n"
             f"{url}"
         )
 
-        print("[SEND MSG]\n", msg)
+        print("[SEND]\n", msg)
 
         ok = telegram_send(msg)
 
-        print("[SEND RESULT]", ok)
+        print("[RESULT]", ok)
 
     save_state(state)
 
