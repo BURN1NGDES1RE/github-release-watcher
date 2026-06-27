@@ -6,7 +6,7 @@ from pathlib import Path
 import requests
 
 WATCHLIST = "watchlist.txt"
-STATE_FILE = "release_state.json"
+STATE_FILE = "data/release_state.json"
 
 SKIP_SECTIONS = {
     "contributors",
