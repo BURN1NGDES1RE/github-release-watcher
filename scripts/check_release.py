@@ -1,8 +1,9 @@
 import json
 import os
 import time
+import re
 from pathlib import Path
-from datetime import datetime, timezone, timedelta
+from datetime import datetime
 
 import requests
 
@@ -16,7 +17,7 @@ CHAT_ID = os.environ["CHAT_ID"]
 # =========================
 # Telegram
 # =========================
-def telegram_send(text):
+def telegram_send(text, retries=3):
     url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
 
     payload = {
@@ -25,25 +26,97 @@ def telegram_send(text):
         "disable_web_page_preview": True,
     }
 
-    try:
-        r = requests.post(url, json=payload, timeout=30)
-        print("[TG]", r.status_code, r.text[:80])
-        return r.status_code == 200
-    except Exception as e:
-        print("[TG ERROR]", e)
-        return False
+    for _ in range(retries):
+        try:
+            r = requests.post(url, json=payload, timeout=30)
+            if r.status_code == 200:
+                return True
+        except Exception:
+            pass
+        time.sleep(2)
+
+    return False
 
 
 # =========================
-# Time
+# Time format (UTC -> CN)
 # =========================
 def format_time(utc_time):
     try:
         dt = datetime.fromisoformat(utc_time.replace("Z", "+00:00"))
-        dt = dt.astimezone(timezone(timedelta(hours=8)))
         return dt.strftime("%Y-%m-%d %H:%M")
-    except:
+    except Exception:
         return utc_time
+
+
+# =========================
+# Release Notes Parser v6.6
+# =========================
+def extract_release_notes(body, max_items=6):
+    if not body or not body.strip():
+        return "No release notes"
+
+    output = []
+    count = 0
+
+    for raw_line in body.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+
+        lower = line.lower()
+
+        # skip noise
+        if any(x in lower for x in [
+            "contributors",
+            "chore:",
+            "ci:",
+            "merged pull request",
+        ]):
+            continue
+
+        # skip images
+        if line.startswith("![") or "<img" in line:
+            continue
+
+        # detect list
+        is_list = (
+            line.startswith("- ")
+            or line.startswith("* ")
+            or re.match(r"^\d+\.\s", line)
+        )
+
+        if is_list:
+            clean = re.sub(r"^(\d+\.|-|\*)\s*", "", line)
+            output.append(f"- {clean}")
+            count += 1
+        else:
+            # keep normal text (关键修复点)
+            if len(line) > 4:
+                output.append(f"- {line}")
+                count += 1
+
+        if count >= max_items:
+            output.append("... more changes in release page")
+            break
+
+    return "\n".join(output) if output else "No release notes"
+
+
+# =========================
+# State
+# =========================
+def load_state():
+    if Path(STATE_FILE).exists():
+        with open(STATE_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return {}
+
+
+def save_state(state):
+    Path(STATE_FILE).parent.mkdir(parents=True, exist_ok=True)
+    with open(STATE_FILE, "w", encoding="utf-8") as f:
+        json.dump(state, f, indent=2, sort_keys=True)
 
 
 # =========================
@@ -53,121 +126,70 @@ def get_latest_release(repo):
     url = f"https://api.github.com/repos/{repo}/releases/latest"
 
     try:
-        r = requests.get(url, timeout=30)
-        print(f"[GITHUB] {repo} status={r.status_code}")
+        r = requests.get(
+            url,
+            headers={
+                "Accept": "application/vnd.github+json",
+                "User-Agent": "release-watcher-v6.6"
+            },
+            timeout=30,
+        )
 
         if r.status_code != 200:
             return None
 
         return r.json()
 
-    except Exception as e:
-        print("[GITHUB ERROR]", repo, e)
+    except Exception:
         return None
-
-
-# =========================
-# State
-# =========================
-def load_state():
-    if Path(STATE_FILE).exists():
-        with open(STATE_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-            print("[STATE LOAD]", data)
-            return data
-    return {}
-
-
-def save_state(state):
-    Path(STATE_FILE).parent.mkdir(parents=True, exist_ok=True)
-    with open(STATE_FILE, "w", encoding="utf-8") as f:
-        json.dump(state, f, indent=2, sort_keys=True)
-    print("[STATE SAVE]", state)
-
-
-# =========================
-# Version
-# =========================
-def get_version(release):
-    return release.get("name") or release.get("tag_name") or "unknown"
-
-
-# =========================
-# KEY (v6.5 核心修复)
-# =========================
-def build_key(release):
-    return str(release.get("id"))
 
 
 # =========================
 # Main
 # =========================
 def main():
-
-    print("========== START ==========")
-
     state = load_state()
-
-    if not Path(WATCHLIST).exists():
-        print("[ERROR] watchlist missing")
-        return
 
     with open(WATCHLIST, "r", encoding="utf-8") as f:
         repos = [x.strip() for x in f if x.strip()]
 
-    print("[WATCHLIST]", repos)
-
     for repo in repos:
-
-        print("\n----------------------")
-        print("[REPO]", repo)
-
         release = get_latest_release(repo)
-
         if not release:
-            print("[SKIP] no release")
             continue
 
-        release_id = build_key(release)
-        old_id = state.get(repo)
-
-        version = get_version(release)
+        tag = release.get("tag_name", "")
+        name = release.get("name") or tag
         published = format_time(release.get("published_at", ""))
         url = release.get("html_url", "")
+        body = release.get("body", "")
 
-        print("[RELEASE_ID]", release_id)
-        print("[OLD_ID]", old_id)
+        release_key = f"{tag}@{release.get('id')}"
 
-        # 已处理
-        if old_id == release_id:
-            print("[SKIP] same release id")
+        old_key = state.get(repo)
+
+        if old_key == release_key:
             continue
 
-        is_first = old_id is None
-
-        # 先写 state（防重复触发）
-        state[repo] = release_id
+        is_first = old_key is None
+        state[repo] = release_key
 
         if is_first:
-            print("[INIT] first seen, skip notify")
             continue
 
+        notes = extract_release_notes(body)
+
         msg = (
-            f"{repo}\n"
-            f"Version: {version}\n"
+            f"{repo} New Release\n\n"
+            f"Version: {tag}\n"
             f"Published: {published}\n\n"
-            f"{url}"
+            f"Release Notes\n{notes}\n\n"
+            f"Release URL\n{url}"
         )
 
-        print("[SEND]\n", msg)
-
-        ok = telegram_send(msg)
-
-        print("[RESULT]", ok)
+        telegram_send(msg)
 
     save_state(state)
-
-    print("========== END ==========")
 
 
 if __name__ == "__main__":
